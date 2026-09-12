@@ -155,3 +155,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     set({ sleepTimer: minutes });
   },
 }));
+
+// Tương thích ngược tránh lỗi build trên Cloudflare
+export function getAudioElement(): HTMLAudioElement | null {
+  return typeof document !== 'undefined' ? (document.getElementById('global-podcast-audio') as HTMLAudioElement | null) : null;
+}
+
+export function unlockAudioForMobile(): void {
+  // Được xử lý tự động trong React Lifecycle bởi AudioController
+}
