@@ -36,30 +36,61 @@ interface PlayerState {
   setSleepTimer: (minutes: number | null) => void;
 }
 
-// Single persistent HTML5 Audio Element for iOS Safari, iPad, Chrome, and Android
 let globalAudio: HTMLAudioElement | null = null;
-let unlockAttempted = false;
+let unlockDone = false;
 
-function getAudioElement(): HTMLAudioElement {
+export function getAudioElement(): HTMLAudioElement {
   if (!globalAudio) {
-    globalAudio = new Audio();
-    globalAudio.setAttribute('playsinline', 'true');
-    (globalAudio as any).playsInline = true;
-    (globalAudio as any).webkitPlaysInline = true;
-    globalAudio.preload = 'metadata';
+    const existing = document.getElementById('global-podcast-audio') as HTMLAudioElement | null;
+    if (existing) {
+      globalAudio = existing;
+    } else {
+      globalAudio = document.createElement('audio');
+      globalAudio.id = 'global-podcast-audio';
+      globalAudio.setAttribute('playsinline', 'true');
+      (globalAudio as any).playsInline = true;
+      (globalAudio as any).webkitPlaysInline = true;
+      globalAudio.setAttribute('webkit-playsinline', 'true');
+      globalAudio.setAttribute('x-webkit-airplay', 'allow');
+      globalAudio.preload = 'auto';
+      globalAudio.style.display = 'none';
+
+      if (document.body) {
+        document.body.appendChild(globalAudio);
+      } else {
+        document.addEventListener('DOMContentLoaded', () => {
+          if (globalAudio && !document.body.contains(globalAudio)) {
+            document.body.appendChild(globalAudio);
+          }
+        });
+      }
+    }
   }
   return globalAudio;
 }
 
+const SILENT_AUDIO_URI = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==';
+
 export function unlockAudioForMobile() {
-  if (unlockAttempted) return;
-  const audio = getAudioElement();
-  audio.play().then(() => {
-    audio.pause();
-    unlockAttempted = true;
-  }).catch(() => {
-    // Keep ready for user gesture
-  });
+  if (unlockDone) return;
+  try {
+    const audio = getAudioElement();
+    if (!audio.src) {
+      audio.src = SILENT_AUDIO_URI;
+      audio.load();
+    }
+    const p = audio.play();
+    if (p !== undefined) {
+      p.then(() => {
+        audio.pause();
+        unlockDone = true;
+      }).catch(() => {
+        // Retry next tap
+      });
+    }
+  } catch (e) {
+    // Ignore error
+  }
 }
 
 export const usePlayerStore = create<PlayerState>((set, get) => {
@@ -85,12 +116,20 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     set({ isLoadingAudio: false });
   });
 
+  audio.addEventListener('canplaythrough', () => {
+    set({ isLoadingAudio: false });
+  });
+
   audio.addEventListener('playing', () => {
     set({ isPlaying: true, isLoadingAudio: false });
   });
 
   audio.addEventListener('pause', () => {
     set({ isPlaying: false });
+  });
+
+  audio.addEventListener('waiting', () => {
+    set({ isLoadingAudio: true });
   });
 
   audio.addEventListener('timeupdate', () => {
@@ -103,7 +142,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
   });
 
   audio.addEventListener('error', () => {
-    console.error('Audio error code:', audio.error?.code, audio.error?.message);
+    console.warn('Audio playback notice:', audio.error?.code, audio.error?.message);
     set({ isPlaying: false, isLoadingAudio: false });
   });
 
@@ -122,7 +161,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     play: (episode, queue) => {
       const audioElement = getAudioElement();
 
-      // Direct CDN stream URL resolution
       let directAudioUrl = episode.audioUrl;
       if (directAudioUrl && directAudioUrl.includes("https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net")) {
         const match = directAudioUrl.match(/https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net%2Fstaging%2F([^&]+)/);
@@ -135,16 +173,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         currentEpisode: episode,
         queue: queue || get().queue,
         isLoadingAudio: true,
-        isPlaying: false,
         progress: 0,
         duration: episode.duration ? parseFloat(episode.duration) || 0 : 0
       });
 
-      if (audioElement.src !== directAudioUrl) {
+      const isNewSource = audioElement.src !== directAudioUrl;
+      if (isNewSource) {
         audioElement.src = directAudioUrl;
         audioElement.playbackRate = get().playbackRate;
         audioElement.volume = get().volume;
-        audioElement.load();
       }
 
       const playPromise = audioElement.play();
@@ -154,28 +191,32 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
             set({ isPlaying: true, isLoadingAudio: false });
           })
           .catch((err) => {
-            console.warn('Audio play() notice:', err.message);
+            console.warn('Playback notice:', err.name, err.message);
             set({ isPlaying: false, isLoadingAudio: false });
           });
       }
 
       if ('mediaSession' in navigator) {
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title: episode.title,
-          artist: episode.podcastTitle || 'VN Podcast Pro',
-          artwork: [
-            { src: episode.image, sizes: '96x96', type: 'image/jpeg' },
-            { src: episode.image, sizes: '256x256', type: 'image/jpeg' },
-            { src: episode.image, sizes: '512x512', type: 'image/jpeg' },
-          ]
-        });
+        try {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: episode.title,
+            artist: episode.podcastTitle || 'YÊU THU PODCAST',
+            artwork: [
+              { src: episode.image, sizes: '96x96', type: 'image/jpeg' },
+              { src: episode.image, sizes: '256x256', type: 'image/jpeg' },
+              { src: episode.image, sizes: '512x512', type: 'image/jpeg' },
+            ]
+          });
 
-        navigator.mediaSession.setActionHandler('play', () => get().togglePlay());
-        navigator.mediaSession.setActionHandler('pause', () => get().togglePlay());
-        navigator.mediaSession.setActionHandler('seekbackward', () => get().seek(get().progress - 15));
-        navigator.mediaSession.setActionHandler('seekforward', () => get().seek(get().progress + 30));
-        navigator.mediaSession.setActionHandler('previoustrack', () => get().prev());
-        navigator.mediaSession.setActionHandler('nexttrack', () => get().next());
+          navigator.mediaSession.setActionHandler('play', () => get().togglePlay());
+          navigator.mediaSession.setActionHandler('pause', () => get().togglePlay());
+          navigator.mediaSession.setActionHandler('seekbackward', () => get().seek(get().progress - 15));
+          navigator.mediaSession.setActionHandler('seekforward', () => get().seek(get().progress + 30));
+          navigator.mediaSession.setActionHandler('previoustrack', () => get().prev());
+          navigator.mediaSession.setActionHandler('nexttrack', () => get().next());
+        } catch (e) {
+          // Ignore
+        }
       }
     },
 
@@ -196,7 +237,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
               set({ isPlaying: true });
             })
             .catch((err) => {
-              console.warn('togglePlay notice:', err.message);
+              console.warn('togglePlay notice:', err.name, err.message);
             });
         }
       }
@@ -217,7 +258,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         audioElement.currentTime = safeTime;
         set({ progress: safeTime });
       } catch (e) {
-        console.warn('Seek notice:', e);
+        console.warn('Seek error:', e);
       }
     },
 
