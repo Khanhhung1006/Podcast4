@@ -13,7 +13,6 @@ import PodcastDetail from './pages/PodcastDetail';
 import Search from './pages/Search';
 import Settings from './pages/Settings';
 import Library from './pages/Library';
-import { Howler } from 'howler';
 import { usePlayerStore } from './store/playerStore';
 
 export default function App() {
@@ -41,24 +40,6 @@ export default function App() {
     }
     return () => clearTimeout(timeout);
   }, [sleepTimer, pause, setSleepTimer]);
-
-  // PWA Setup for Audio
-  useEffect(() => {
-    // Unlock Audio Context on first interaction
-    const unlockAudio = () => {
-      if (Howler.ctx && Howler.ctx.state === 'suspended') {
-        Howler.ctx.resume();
-      }
-      document.removeEventListener('click', unlockAudio);
-      document.removeEventListener('touchstart', unlockAudio);
-    };
-    document.addEventListener('click', unlockAudio);
-    document.addEventListener('touchstart', unlockAudio);
-    return () => {
-      document.removeEventListener('click', unlockAudio);
-      document.removeEventListener('touchstart', unlockAudio);
-    };
-  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>
