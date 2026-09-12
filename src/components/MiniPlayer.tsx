@@ -1,12 +1,11 @@
 import React, { useState } from 'react';
 import { usePlayerStore } from '../store/playerStore';
-import { formatTime, cn } from '../lib/utils';
-import { Play, Pause, SkipForward, SkipBack } from 'lucide-react';
+import { Play, Pause, SkipForward, SkipBack, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import FullPlayer from './FullPlayer';
 
 export default function MiniPlayer() {
-  const { currentEpisode, isPlaying, progress, duration, togglePlay, next, prev } = usePlayerStore();
+  const { currentEpisode, isPlaying, isLoadingAudio, progress, duration, togglePlay, next, prev } = usePlayerStore();
   const [isExpanded, setIsExpanded] = useState(false);
 
   if (!currentEpisode) return null;
@@ -26,7 +25,7 @@ export default function MiniPlayer() {
           >
             <div className="mx-auto max-w-screen-md bg-panel-blur backdrop-blur-xl rounded-2xl p-2 sm:p-3 shadow-2xl border border-border-color flex items-center gap-3 sm:gap-4 overflow-hidden relative">
               
-              {/* Progress Bar Background */}
+              {/* Progress Bar */}
               <div className="absolute bottom-0 left-0 h-1 bg-border-color w-full rounded-b-2xl">
                 <div 
                   className="h-full bg-primary rounded-r-full transition-all duration-300 ease-linear"
@@ -58,9 +57,16 @@ export default function MiniPlayer() {
                 </button>
                 <button 
                   onClick={(e) => { e.stopPropagation(); togglePlay(); }}
-                  className="h-10 w-10 sm:h-12 sm:w-12 bg-fg text-bg rounded-full flex items-center justify-center hover:scale-105 active:scale-95 transition"
+                  className="h-10 w-10 sm:h-12 sm:w-12 bg-fg text-bg rounded-full flex items-center justify-center hover:scale-105 active:scale-95 transition cursor-pointer"
+                  aria-label={isPlaying ? 'Tạm dừng' : 'Phát'}
                 >
-                  {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-1" />}
+                  {isLoadingAudio ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : isPlaying ? (
+                    <Pause className="w-5 h-5 fill-current" />
+                  ) : (
+                    <Play className="w-5 h-5 fill-current ml-1" />
+                  )}
                 </button>
                 <button 
                   onClick={(e) => { e.stopPropagation(); next(); }}
