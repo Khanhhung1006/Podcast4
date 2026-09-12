@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { Howl, Howler } from 'howler';
 
 export interface Episode {
   id: string;
@@ -25,9 +24,6 @@ interface PlayerState {
   isMuted: boolean;
   sleepTimer: number | null;
   
-  // Audio Engine
-  howl: Howl | null;
-  
   // Actions
   play: (episode: Episode, queue?: Episode[]) => void;
   togglePlay: () => void;
@@ -40,181 +36,223 @@ interface PlayerState {
   setSleepTimer: (minutes: number | null) => void;
 }
 
-export const usePlayerStore = create<PlayerState>((set, get) => ({
-  currentEpisode: null,
-  queue: [],
-  isPlaying: false,
-  isLoadingAudio: false,
-  progress: 0,
-  duration: 0,
-  volume: 1,
-  playbackRate: 1,
-  isMuted: false,
-  sleepTimer: null,
-  howl: null,
+// Single persistent HTML5 Audio Element for iOS Safari, iPad, Chrome, and Android
+let globalAudio: HTMLAudioElement | null = null;
+let unlockAttempted = false;
 
-  play: (episode, queue) => {
-    const { howl } = get();
-    if (howl) {
-      howl.unload();
+function getAudioElement(): HTMLAudioElement {
+  if (!globalAudio) {
+    globalAudio = new Audio();
+    globalAudio.setAttribute('playsinline', 'true');
+    (globalAudio as any).playsInline = true;
+    (globalAudio as any).webkitPlaysInline = true;
+    globalAudio.preload = 'metadata';
+  }
+  return globalAudio;
+}
+
+export function unlockAudioForMobile() {
+  if (unlockAttempted) return;
+  const audio = getAudioElement();
+  audio.play().then(() => {
+    audio.pause();
+    unlockAttempted = true;
+  }).catch(() => {
+    // Keep ready for user gesture
+  });
+}
+
+export const usePlayerStore = create<PlayerState>((set, get) => {
+  const audio = getAudioElement();
+
+  audio.addEventListener('loadstart', () => {
+    set({ isLoadingAudio: true });
+  });
+
+  audio.addEventListener('loadedmetadata', () => {
+    if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) {
+      set({ duration: audio.duration, isLoadingAudio: false });
     }
+  });
 
-    // 1. Chuyển đổi URL Anchor redirect sang link trực tiếp CDN CloudFront
-    let directAudioUrl = episode.audioUrl;
-    if (directAudioUrl && directAudioUrl.includes("https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net")) {
-      const match = directAudioUrl.match(/https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net%2Fstaging%2F([^&]+)/);
-      if (match) {
-        directAudioUrl = "https://d3ctxlq1ktw2nl.cloudfront.net/staging/" + decodeURIComponent(match[1]);
-      }
+  audio.addEventListener('durationchange', () => {
+    if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) {
+      set({ duration: audio.duration });
     }
+  });
 
-    // 2. Chỉ định định dạng tương thích tuyệt đối cho WebKit Safari iOS & Android
-    const cleanUrl = directAudioUrl.split('?')[0].toLowerCase();
-    const format = cleanUrl.endsWith('.m4a') ? ['m4a', 'mp4', 'aac'] : ['mp3'];
+  audio.addEventListener('canplay', () => {
+    set({ isLoadingAudio: false });
+  });
 
-    set({ isLoadingAudio: true, isPlaying: false, progress: 0 });
+  audio.addEventListener('playing', () => {
+    set({ isPlaying: true, isLoadingAudio: false });
+  });
 
-    let retryCount = 0;
+  audio.addEventListener('pause', () => {
+    set({ isPlaying: false });
+  });
 
-    const createAndPlayHowl = (audioSrc: string) => {
-      const newHowl = new Howl({
-        src: [audioSrc],
-        format: format,
-        html5: true, // Bắt buộc dùng HTML5 Audio streaming cho tập dài
-        preload: true,
-        volume: get().volume,
-        rate: get().playbackRate,
-        onplay: () => {
-          set({ isPlaying: true, isLoadingAudio: false });
-        },
-        onpause: () => set({ isPlaying: false }),
-        onend: () => {
-          set({ isPlaying: false, isLoadingAudio: false });
-          get().next();
-        },
-        onload: () => {
-          set({ duration: newHowl.duration(), isLoadingAudio: false });
-        },
-        onloaderror: (id, err) => {
-          console.error("Audio Load Error:", err, "URL:", audioSrc);
-          if (!audioSrc.includes('/api/stream') && retryCount === 0) {
-            retryCount++;
-            const proxyUrl = `/api/stream?url=${encodeURIComponent(audioSrc)}`;
-            setTimeout(() => {
-              createAndPlayHowl(proxyUrl);
-            }, 300);
-          } else if (retryCount < 2) {
-            retryCount++;
-            setTimeout(() => {
-              createAndPlayHowl(audioSrc);
-            }, 500);
-          } else {
-            set({ isLoadingAudio: false, isPlaying: false });
-          }
-        },
-        onplayerror: (id, err) => {
-          console.warn("Audio Play Error:", err);
-          set({ isLoadingAudio: false });
-          newHowl.once('unlock', () => {
-            newHowl.play();
-          });
+  audio.addEventListener('timeupdate', () => {
+    set({ progress: audio.currentTime });
+  });
+
+  audio.addEventListener('ended', () => {
+    set({ isPlaying: false, isLoadingAudio: false });
+    get().next();
+  });
+
+  audio.addEventListener('error', () => {
+    console.error('Audio error code:', audio.error?.code, audio.error?.message);
+    set({ isPlaying: false, isLoadingAudio: false });
+  });
+
+  return {
+    currentEpisode: null,
+    queue: [],
+    isPlaying: false,
+    isLoadingAudio: false,
+    progress: 0,
+    duration: 0,
+    volume: 1,
+    playbackRate: 1,
+    isMuted: false,
+    sleepTimer: null,
+
+    play: (episode, queue) => {
+      const audioElement = getAudioElement();
+
+      // Direct CDN stream URL resolution
+      let directAudioUrl = episode.audioUrl;
+      if (directAudioUrl && directAudioUrl.includes("https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net")) {
+        const match = directAudioUrl.match(/https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net%2Fstaging%2F([^&]+)/);
+        if (match) {
+          directAudioUrl = "https://d3ctxlq1ktw2nl.cloudfront.net/staging/" + decodeURIComponent(match[1]);
         }
+      }
+
+      set({
+        currentEpisode: episode,
+        queue: queue || get().queue,
+        isLoadingAudio: true,
+        isPlaying: false,
+        progress: 0,
+        duration: episode.duration ? parseFloat(episode.duration) || 0 : 0
       });
 
-      newHowl.play();
-      set({ howl: newHowl });
-      return newHowl;
-    };
+      if (audioElement.src !== directAudioUrl) {
+        audioElement.src = directAudioUrl;
+        audioElement.playbackRate = get().playbackRate;
+        audioElement.volume = get().volume;
+        audioElement.load();
+      }
 
-    const newHowl = createAndPlayHowl(directAudioUrl);
+      const playPromise = audioElement.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            set({ isPlaying: true, isLoadingAudio: false });
+          })
+          .catch((err) => {
+            console.warn('Audio play() notice:', err.message);
+            set({ isPlaying: false, isLoadingAudio: false });
+          });
+      }
 
-    // Hỗ trợ hiển thị trên màn hình khóa điện thoại (Media Session API)
-    if ('mediaSession' in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: episode.title,
-        artist: episode.podcastTitle || 'VN Podcast Pro',
-        artwork: [{ src: episode.image, sizes: '512x512', type: 'image/jpeg' }]
-      });
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: episode.title,
+          artist: episode.podcastTitle || 'VN Podcast Pro',
+          artwork: [
+            { src: episode.image, sizes: '96x96', type: 'image/jpeg' },
+            { src: episode.image, sizes: '256x256', type: 'image/jpeg' },
+            { src: episode.image, sizes: '512x512', type: 'image/jpeg' },
+          ]
+        });
 
-      navigator.mediaSession.setActionHandler('play', () => get().togglePlay());
-      navigator.mediaSession.setActionHandler('pause', () => get().togglePlay());
-      navigator.mediaSession.setActionHandler('seekbackward', () => get().seek(get().progress - 15));
-      navigator.mediaSession.setActionHandler('seekforward', () => get().seek(get().progress + 30));
-      navigator.mediaSession.setActionHandler('previoustrack', () => get().prev());
-      navigator.mediaSession.setActionHandler('nexttrack', () => get().next());
-    }
+        navigator.mediaSession.setActionHandler('play', () => get().togglePlay());
+        navigator.mediaSession.setActionHandler('pause', () => get().togglePlay());
+        navigator.mediaSession.setActionHandler('seekbackward', () => get().seek(get().progress - 15));
+        navigator.mediaSession.setActionHandler('seekforward', () => get().seek(get().progress + 30));
+        navigator.mediaSession.setActionHandler('previoustrack', () => get().prev());
+        navigator.mediaSession.setActionHandler('nexttrack', () => get().next());
+      }
+    },
 
-    set({ 
-      currentEpisode: episode, 
-      howl: newHowl,
-      queue: queue || get().queue,
-    });
-  },
+    togglePlay: () => {
+      const audioElement = getAudioElement();
+      const { isPlaying, currentEpisode } = get();
 
-  togglePlay: () => {
-    const { howl, isPlaying } = get();
-    if (howl) {
-      if (isPlaying) howl.pause();
-      else howl.play();
-    }
-  },
-  
-  pause: () => {
-    const { howl } = get();
-    if (howl) howl.pause();
-  },
+      if (!currentEpisode) return;
 
-  seek: (time) => {
-    const { howl, duration } = get();
-    if (howl) {
+      if (isPlaying) {
+        audioElement.pause();
+        set({ isPlaying: false });
+      } else {
+        const playPromise = audioElement.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              set({ isPlaying: true });
+            })
+            .catch((err) => {
+              console.warn('togglePlay notice:', err.message);
+            });
+        }
+      }
+    },
+
+    pause: () => {
+      const audioElement = getAudioElement();
+      audioElement.pause();
+      set({ isPlaying: false });
+    },
+
+    seek: (time) => {
+      const audioElement = getAudioElement();
+      const duration = get().duration || audioElement.duration || 0;
       const safeTime = Math.max(0, Math.min(time, duration));
-      howl.seek(safeTime);
-      set({ progress: safeTime });
+      
+      try {
+        audioElement.currentTime = safeTime;
+        set({ progress: safeTime });
+      } catch (e) {
+        console.warn('Seek notice:', e);
+      }
+    },
+
+    setVolume: (vol) => {
+      const audioElement = getAudioElement();
+      audioElement.volume = vol;
+      set({ volume: vol });
+    },
+
+    setPlaybackRate: (rate) => {
+      const audioElement = getAudioElement();
+      audioElement.playbackRate = rate;
+      set({ playbackRate: rate });
+    },
+
+    next: () => {
+      const { queue, currentEpisode, play } = get();
+      if (!currentEpisode || queue.length === 0) return;
+      const currentIndex = queue.findIndex(e => e.id === currentEpisode.id);
+      if (currentIndex !== -1 && currentIndex < queue.length - 1) {
+        play(queue[currentIndex + 1], queue);
+      }
+    },
+
+    prev: () => {
+      const { queue, currentEpisode, play } = get();
+      if (!currentEpisode || queue.length === 0) return;
+      const currentIndex = queue.findIndex(e => e.id === currentEpisode.id);
+      if (currentIndex > 0) {
+        play(queue[currentIndex - 1], queue);
+      }
+    },
+
+    setSleepTimer: (minutes) => {
+      set({ sleepTimer: minutes });
     }
-  },
-
-  setVolume: (vol) => {
-    const { howl } = get();
-    if (howl) howl.volume(vol);
-    set({ volume: vol });
-  },
-
-  setPlaybackRate: (rate) => {
-    const { howl } = get();
-    if (howl) howl.rate(rate);
-    set({ playbackRate: rate });
-  },
-
-  next: () => {
-    const { queue, currentEpisode, play } = get();
-    if (!currentEpisode || queue.length === 0) return;
-    const currentIndex = queue.findIndex(e => e.id === currentEpisode.id);
-    if (currentIndex !== -1 && currentIndex < queue.length - 1) {
-      play(queue[currentIndex + 1], queue);
-    }
-  },
-
-  prev: () => {
-    const { queue, currentEpisode, play } = get();
-    if (!currentEpisode || queue.length === 0) return;
-    const currentIndex = queue.findIndex(e => e.id === currentEpisode.id);
-    if (currentIndex > 0) {
-      play(queue[currentIndex - 1], queue);
-    }
-  },
-
-  setSleepTimer: (minutes) => {
-    set({ sleepTimer: minutes });
-  }
-}));
-
-// Bộ cập nhật thanh thời gian chạy theo giây
-setInterval(() => {
-  const { howl, isPlaying } = usePlayerStore.getState();
-  if (isPlaying && howl) {
-    const seek = howl.seek();
-    if (typeof seek === 'number') {
-      usePlayerStore.setState({ progress: seek });
-    }
-  }
-}, 1000);
+  };
+});
