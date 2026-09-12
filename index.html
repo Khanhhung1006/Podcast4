@@ -13,7 +13,6 @@
           if (args[0] && typeof args[0] === 'string' && args[0].includes('[vite]')) return;
           origWarn.apply(console, args);
         };
-        // Unregister any stale Service Worker and clear cache storage
         if ('serviceWorker' in navigator) {
           navigator.serviceWorker.getRegistrations().then(function(registrations) {
             for (let reg of registrations) {
@@ -58,7 +57,8 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Pre-rendered DOM Audio element for iOS Safari & Android WebView -->
+    <audio id="global-podcast-audio" playsinline webkit-playsinline preload="auto" x-webkit-airplay="allow" style="display:none"></audio>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
