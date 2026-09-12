@@ -59,7 +59,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       howl.unload();
     }
 
-    // Tối ưu hóa: Bỏ qua redirect Anchor để stream thẳng từ CDN Cloudfront siêu nhanh
+    // 1. Chuyển đổi URL Anchor redirect sang link trực tiếp CDN CloudFront
     let directAudioUrl = episode.audioUrl;
     if (directAudioUrl && directAudioUrl.includes("https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net")) {
       const match = directAudioUrl.match(/https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net%2Fstaging%2F([^&]+)/);
@@ -68,39 +68,67 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       }
     }
 
+    // 2. Chỉ định định dạng tương thích tuyệt đối cho WebKit Safari iOS & Android
+    const cleanUrl = directAudioUrl.split('?')[0].toLowerCase();
+    const format = cleanUrl.endsWith('.m4a') ? ['m4a', 'mp4', 'aac'] : ['mp3'];
+
     set({ isLoadingAudio: true, isPlaying: false, progress: 0 });
 
-    const newHowl = new Howl({
-      src: [directAudioUrl],
-      html5: true, // Force HTML5 Audio để hỗ trợ stream các tập dài mượt mà
-      preload: true,
-      volume: get().volume,
-      rate: get().playbackRate,
-      onplay: () => set({ isPlaying: true, isLoadingAudio: false }),
-      onpause: () => set({ isPlaying: false }),
-      onend: () => {
-        set({ isPlaying: false, isLoadingAudio: false });
-        get().next();
-      },
-      onload: () => {
-        set({ duration: newHowl.duration(), isLoadingAudio: false });
-      },
-      onloaderror: (id, err) => {
-        console.error("Audio Load Error:", err, "URL:", directAudioUrl);
-        set({ isLoadingAudio: false, isPlaying: false });
-      },
-      onplayerror: (id, err) => {
-        console.error("Audio Play Error:", err);
-        set({ isLoadingAudio: false });
-        newHowl.once('unlock', () => {
-          newHowl.play();
-        });
-      }
-    });
+    let retryCount = 0;
 
-    newHowl.play();
+    const createAndPlayHowl = (audioSrc: string) => {
+      const newHowl = new Howl({
+        src: [audioSrc],
+        format: format,
+        html5: true, // Bắt buộc dùng HTML5 Audio streaming cho tập dài
+        preload: true,
+        volume: get().volume,
+        rate: get().playbackRate,
+        onplay: () => {
+          set({ isPlaying: true, isLoadingAudio: false });
+        },
+        onpause: () => set({ isPlaying: false }),
+        onend: () => {
+          set({ isPlaying: false, isLoadingAudio: false });
+          get().next();
+        },
+        onload: () => {
+          set({ duration: newHowl.duration(), isLoadingAudio: false });
+        },
+        onloaderror: (id, err) => {
+          console.error("Audio Load Error:", err, "URL:", audioSrc);
+          if (!audioSrc.includes('/api/stream') && retryCount === 0) {
+            retryCount++;
+            const proxyUrl = `/api/stream?url=${encodeURIComponent(audioSrc)}`;
+            setTimeout(() => {
+              createAndPlayHowl(proxyUrl);
+            }, 300);
+          } else if (retryCount < 2) {
+            retryCount++;
+            setTimeout(() => {
+              createAndPlayHowl(audioSrc);
+            }, 500);
+          } else {
+            set({ isLoadingAudio: false, isPlaying: false });
+          }
+        },
+        onplayerror: (id, err) => {
+          console.warn("Audio Play Error:", err);
+          set({ isLoadingAudio: false });
+          newHowl.once('unlock', () => {
+            newHowl.play();
+          });
+        }
+      });
 
-    // Media Session API Support (Điều khiển từ màn hình khóa điện thoại)
+      newHowl.play();
+      set({ howl: newHowl });
+      return newHowl;
+    };
+
+    const newHowl = createAndPlayHowl(directAudioUrl);
+
+    // Hỗ trợ hiển thị trên màn hình khóa điện thoại (Media Session API)
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: episode.title,
@@ -180,7 +208,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   }
 }));
 
-// Bộ đếm thời lượng nghe theo giây
+// Bộ cập nhật thanh thời gian chạy theo giây
 setInterval(() => {
   const { howl, isPlaying } = usePlayerStore.getState();
   if (isPlaying && howl) {
