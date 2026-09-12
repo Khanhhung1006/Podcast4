@@ -62,6 +62,44 @@ function resolveAudioUrl(rawUrl?: string): string {
 
 let currentSound: Howl | null = null;
 let progressInterval: number | null = null;
+let isUnlocked = false;
+
+function globalUnlock() {
+  if (isUnlocked) return;
+  isUnlocked = true;
+  
+  // Unlock Web Audio
+  if (Howler.ctx && Howler.ctx.state === 'suspended') {
+    Howler.ctx.resume();
+  }
+
+  // Play a silent base64 audio to unlock the HTML5 pool natively
+  const silentHowl = new Howl({
+    src: ['data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA=='],
+    html5: true,
+    volume: 0,
+    onplay: () => {
+      setTimeout(() => silentHowl.unload(), 100);
+    }
+  });
+  silentHowl.play();
+  
+  const node = (silentHowl as any)._sounds?.[0]?._node;
+  if (node && typeof node.play === 'function') {
+    const p = node.play();
+    if (p !== undefined) p.catch(() => {});
+  }
+}
+
+// Bắt sự kiện chạm ĐẦU TIÊN trên toàn bộ ứng dụng để UNLOCK Safari Audio
+if (typeof document !== 'undefined') {
+  const events = ['touchstart', 'touchend', 'click', 'keydown'];
+  const unlock = () => {
+    globalUnlock();
+    events.forEach(e => document.removeEventListener(e, unlock, true));
+  };
+  events.forEach(e => document.addEventListener(e, unlock, true));
+}
 
 export const usePlayerStore = create<PlayerState>((set, get) => {
   const updateProgress = () => {
@@ -141,10 +179,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
 
       currentSound = new Howl({
         src: [directUrl],
-        html5: true, // Phải có cờ này để hỗ trợ stream tệp Podcast lớn không bị crash ram.
+        format: ['mp3', 'm4a', 'wav', 'aac'],
+        html5: true, // Must be true for streaming large podcast files!
         volume: get().volume,
         rate: get().playbackRate,
-        preload: 'metadata',
+        preload: true,
         onplay: () => {
           set({ isPlaying: true, isLoadingAudio: false });
           startProgressInterval();
@@ -182,8 +221,20 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         },
       });
 
-      // Synchronous execution (Chạy đồng bộ với thao tác click - vượt qua lớp bảo mật Safari)
+      // Synchronous execution (Lệnh gọi gốc của Howler)
       currentSound.play();
+      
+      // BẮT BUỘC CHO SAFARI: Can thiệp sâu vào thẻ Node HTML5 của Howler 
+      // Ép Node ẩn đó phải chạy trực tiếp ngay trong 1 Tick đồng bộ (Synchronous tick)
+      try {
+        const node = (currentSound as any)._sounds?.[0]?._node;
+        if (node && typeof node.play === 'function') {
+          const p = node.play();
+          if (p !== undefined) {
+            p.catch((e: any) => console.warn('Safari override play error:', e));
+          }
+        }
+      } catch (e) {}
     },
 
     togglePlay: () => {
@@ -197,6 +248,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
         set({ isPlaying: true });
         if (currentSound) {
           currentSound.play();
+          
+          // Force Safari Override
+          try {
+            const node = (currentSound as any)._sounds?.[0]?._node;
+            if (node && typeof node.play === 'function') {
+              const p = node.play();
+              if (p !== undefined) p.catch(() => {});
+            }
+          } catch (e) {}
         } else {
           get().play(currentEpisode);
         }
@@ -252,7 +312,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
   };
 });
 
-// Hàm cũ giữ lại cho code khác không bị crash khi import
 export function getAudioElement(): any {
   return null;
 }
