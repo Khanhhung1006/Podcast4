@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { Howl, Howler } from 'howler';
 
 export interface Episode {
   id: string;
@@ -42,39 +43,11 @@ interface PlayerState {
   setDuration: (dur: number) => void;
 }
 
-let globalAudio: HTMLAudioElement | null = null;
-
-export function getAudio(): HTMLAudioElement {
-  if (!globalAudio) {
-    const existing = typeof document !== 'undefined' ? (document.getElementById('global-podcast-audio') as HTMLAudioElement | null) : null;
-    if (existing) {
-      globalAudio = existing;
-    } else if (typeof document !== 'undefined') {
-      globalAudio = document.createElement('audio');
-      globalAudio.id = 'global-podcast-audio';
-      globalAudio.setAttribute('playsinline', 'true');
-      (globalAudio as any).playsInline = true;
-      (globalAudio as any).webkitPlaysInline = true;
-      globalAudio.setAttribute('webkit-playsinline', 'true');
-      globalAudio.setAttribute('x-webkit-airplay', 'allow');
-      globalAudio.preload = 'auto';
-      globalAudio.style.display = 'none';
-
-      if (document.body) {
-        document.body.appendChild(globalAudio);
-      } else {
-        document.addEventListener('DOMContentLoaded', () => {
-          if (globalAudio && !document.body.contains(globalAudio)) {
-            document.body.appendChild(globalAudio);
-          }
-        });
-      }
-    }
-  }
-  return globalAudio!;
+if (typeof window !== 'undefined') {
+  Howler.autoUnlock = true;
+  Howler.html5PoolSize = 10;
 }
 
-// Chuyển đổi link CDN Anchor / CloudFront trực tiếp
 function resolveAudioUrl(rawUrl?: string): string {
   if (!rawUrl) return '';
   let direct = rawUrl;
@@ -87,61 +60,27 @@ function resolveAudioUrl(rawUrl?: string): string {
   return direct;
 }
 
+let currentSound: Howl | null = null;
+let progressInterval: number | null = null;
+
 export const usePlayerStore = create<PlayerState>((set, get) => {
-  if (typeof window !== 'undefined') {
-    const audio = getAudio();
-    if (audio) {
-      audio.addEventListener('loadstart', () => {
-        set({ isLoadingAudio: true });
-      });
-
-      audio.addEventListener('loadedmetadata', () => {
-        if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) {
-          set({ duration: audio.duration, isLoadingAudio: false });
-        }
-      });
-
-      audio.addEventListener('durationchange', () => {
-        if (audio.duration && !isNaN(audio.duration) && isFinite(audio.duration)) {
-          set({ duration: audio.duration });
-        }
-      });
-
-      audio.addEventListener('canplay', () => {
-        set({ isLoadingAudio: false });
-      });
-
-      audio.addEventListener('canplaythrough', () => {
-        set({ isLoadingAudio: false });
-      });
-
-      audio.addEventListener('playing', () => {
-        set({ isPlaying: true, isLoadingAudio: false });
-      });
-
-      audio.addEventListener('pause', () => {
-        set({ isPlaying: false });
-      });
-
-      audio.addEventListener('waiting', () => {
-        set({ isLoadingAudio: true });
-      });
-
-      audio.addEventListener('timeupdate', () => {
-        set({ progress: audio.currentTime });
-      });
-
-      audio.addEventListener('ended', () => {
-        set({ isPlaying: false, isLoadingAudio: false });
-        get().next();
-      });
-
-      audio.addEventListener('error', () => {
-        console.warn('Audio playback error notice:', audio.error?.code, audio.error?.message);
-        set({ isPlaying: false, isLoadingAudio: false });
-      });
+  const updateProgress = () => {
+    if (currentSound && currentSound.playing()) {
+      set({ progress: currentSound.seek() as number });
     }
-  }
+  };
+
+  const startProgressInterval = () => {
+    if (progressInterval) clearInterval(progressInterval);
+    progressInterval = window.setInterval(updateProgress, 1000);
+  };
+
+  const stopProgressInterval = () => {
+    if (progressInterval) {
+      clearInterval(progressInterval);
+      progressInterval = null;
+    }
+  };
 
   return {
     currentEpisode: null,
@@ -161,38 +100,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
     setDuration: (duration: number) => set({ duration }),
 
     play: (episode: Episode, queue?: Episode[]) => {
-      const audio = getAudio();
       const directUrl = resolveAudioUrl(episode.audioUrl);
-
-      set({
-        currentEpisode: episode,
-        queue: queue || get().queue,
-        isPlaying: true,
-        isLoadingAudio: true,
-        progress: 0,
-        duration: episode.duration ? parseFloat(episode.duration) || 0 : 0,
-      });
-
-      if (audio) {
-        if (audio.src !== directUrl) {
-          audio.src = directUrl;
-          audio.playbackRate = get().playbackRate;
-          audio.volume = get().volume;
-        }
-
-        // BẮT BUỘC CHO SAFARI: audio.play() phải gọi ĐỒNG BỘ trong cùng sự kiện click
-        const playPromise = audio.play();
-        if (playPromise !== undefined) {
-          playPromise
-            .then(() => {
-              set({ isPlaying: true, isLoadingAudio: false });
-            })
-            .catch((err) => {
-              console.warn('Playback error:', err.name, err.message);
-              set({ isPlaying: false, isLoadingAudio: false });
-            });
-        }
-      }
 
       if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
         try {
@@ -216,67 +124,107 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
           // Ignore
         }
       }
+
+      set({
+        currentEpisode: episode,
+        queue: queue || get().queue,
+        isPlaying: true,
+        isLoadingAudio: true,
+        progress: 0,
+        duration: episode.duration ? parseFloat(episode.duration) || 0 : 0,
+      });
+
+      if (currentSound) {
+        currentSound.unload();
+        currentSound = null;
+      }
+
+      currentSound = new Howl({
+        src: [directUrl],
+        html5: true, // Phải có cờ này để hỗ trợ stream tệp Podcast lớn không bị crash ram.
+        volume: get().volume,
+        rate: get().playbackRate,
+        preload: 'metadata',
+        onplay: () => {
+          set({ isPlaying: true, isLoadingAudio: false });
+          startProgressInterval();
+          const dur = currentSound?.duration();
+          if (dur && isFinite(dur) && dur > 0) set({ duration: dur });
+        },
+        onpause: () => {
+          set({ isPlaying: false });
+          stopProgressInterval();
+        },
+        onend: () => {
+          set({ isPlaying: false, isLoadingAudio: false });
+          stopProgressInterval();
+          get().next();
+        },
+        onstop: () => {
+          set({ isPlaying: false });
+          stopProgressInterval();
+        },
+        onload: () => {
+          set({ isLoadingAudio: false });
+          const dur = currentSound?.duration();
+          if (dur && isFinite(dur) && dur > 0) set({ duration: dur });
+        },
+        onloaderror: (id, err) => {
+          console.warn('Howler load error:', err);
+          set({ isPlaying: false, isLoadingAudio: false });
+        },
+        onplayerror: (id, err) => {
+          console.warn('Howler play error:', err);
+          currentSound?.once('unlock', () => {
+            currentSound?.play();
+          });
+          set({ isPlaying: false, isLoadingAudio: false });
+        },
+      });
+
+      // Synchronous execution (Chạy đồng bộ với thao tác click - vượt qua lớp bảo mật Safari)
+      currentSound.play();
     },
 
     togglePlay: () => {
       const { isPlaying, currentEpisode } = get();
       if (!currentEpisode) return;
-      const audio = getAudio();
 
       if (isPlaying) {
-        if (audio) audio.pause();
+        if (currentSound) currentSound.pause();
         set({ isPlaying: false });
       } else {
         set({ isPlaying: true });
-        if (audio) {
-          const playPromise = audio.play();
-          if (playPromise !== undefined) {
-            playPromise
-              .then(() => {
-                set({ isPlaying: true });
-              })
-              .catch((err) => {
-                console.warn('togglePlay notice:', err.name, err.message);
-                set({ isPlaying: false });
-              });
-          }
+        if (currentSound) {
+          currentSound.play();
+        } else {
+          get().play(currentEpisode);
         }
       }
     },
 
     pause: () => {
-      const audio = getAudio();
-      if (audio) audio.pause();
+      if (currentSound) currentSound.pause();
       set({ isPlaying: false });
     },
 
     seek: (time: number) => {
-      const audio = getAudio();
-      const duration = get().duration || audio?.duration || 0;
+      const duration = get().duration;
       const safeTime = Math.max(0, Math.min(time, duration || Infinity));
       set({ progress: safeTime });
-      if (audio) {
-        try {
-          audio.currentTime = safeTime;
-        } catch (e) {
-          // Ignore
-        }
+      if (currentSound) {
+        currentSound.seek(safeTime);
       }
     },
 
     setVolume: (vol: number) => {
-      const audio = getAudio();
-      if (audio) {
-        audio.volume = vol;
-      }
+      Howler.volume(vol);
+      if (currentSound) currentSound.volume(vol);
       set({ volume: vol });
     },
 
     setPlaybackRate: (rate: number) => {
-      const audio = getAudio();
-      if (audio) {
-        audio.playbackRate = rate;
-      }
+      if (currentSound) currentSound.rate(rate);
       set({ playbackRate: rate });
     },
 
@@ -304,19 +252,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => {
   };
 });
 
-export function getAudioElement(): HTMLAudioElement | null {
-  return typeof document !== 'undefined' ? getAudio() : null;
+// Hàm cũ giữ lại cho code khác không bị crash khi import
+export function getAudioElement(): any {
+  return null;
 }
 
 export function unlockAudioForMobile(): void {
-  if (typeof document !== 'undefined') {
-    const audio = getAudio();
-    if (audio && !audio.src) {
-      audio.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==';
-      const p = audio.play();
-      if (p !== undefined) {
-        p.then(() => audio.pause()).catch(() => {});
-      }
-    }
-  }
+  // Automatically handled by Howler.js global touch listener
 }
