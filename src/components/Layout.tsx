@@ -2,6 +2,7 @@ import React from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { Home, Search, Library, Settings } from 'lucide-react';
 import MiniPlayer from './MiniPlayer';
+import AudioController from './AudioController';
 import { cn } from '../lib/utils';
 import { usePlayerStore } from '../store/playerStore';
 
@@ -18,6 +19,9 @@ export default function Layout() {
 
   return (
     <div className="flex h-screen w-full bg-bg text-fg flex-col md:flex-row overflow-hidden relative">
+      {/* Real React-mounted HTML5 Audio element */}
+      <AudioController />
+
       {/* Desktop Sidebar */}
       <nav className="hidden md:flex w-64 bg-bg border-r border-border-color flex-col p-6 z-10 shrink-0">
         <Link to="/" className="text-2xl font-bold mb-10 flex items-center gap-3">
