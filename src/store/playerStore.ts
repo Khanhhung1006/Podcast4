@@ -17,6 +17,7 @@ interface PlayerState {
   currentEpisode: Episode | null;
   queue: Episode[];
   isPlaying: boolean;
+  isLoadingAudio: boolean;
   progress: number;
   duration: number;
   volume: number;
@@ -43,6 +44,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   currentEpisode: null,
   queue: [],
   isPlaying: false,
+  isLoadingAudio: false,
   progress: 0,
   duration: 0,
   volume: 1,
@@ -57,23 +59,39 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       howl.unload();
     }
 
+    // Tối ưu hóa: Bỏ qua redirect Anchor để stream thẳng từ CDN Cloudfront siêu nhanh
+    let directAudioUrl = episode.audioUrl;
+    if (directAudioUrl && directAudioUrl.includes("https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net")) {
+      const match = directAudioUrl.match(/https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net%2Fstaging%2F([^&]+)/);
+      if (match) {
+        directAudioUrl = "https://d3ctxlq1ktw2nl.cloudfront.net/staging/" + decodeURIComponent(match[1]);
+      }
+    }
+
+    set({ isLoadingAudio: true, isPlaying: false, progress: 0 });
+
     const newHowl = new Howl({
-      src: [episode.audioUrl],
-      html5: true, // Force HTML5 Audio to support large files without full download
+      src: [directAudioUrl],
+      html5: true, // Force HTML5 Audio để hỗ trợ stream các tập dài mượt mà
+      preload: true,
       volume: get().volume,
       rate: get().playbackRate,
-      onplay: () => set({ isPlaying: true }),
+      onplay: () => set({ isPlaying: true, isLoadingAudio: false }),
       onpause: () => set({ isPlaying: false }),
       onend: () => {
-        set({ isPlaying: false });
+        set({ isPlaying: false, isLoadingAudio: false });
         get().next();
       },
-      onload: () => set({ duration: newHowl.duration() }),
+      onload: () => {
+        set({ duration: newHowl.duration(), isLoadingAudio: false });
+      },
       onloaderror: (id, err) => {
-        console.error("Audio Load Error:", err, "URL:", episode.audioUrl);
+        console.error("Audio Load Error:", err, "URL:", directAudioUrl);
+        set({ isLoadingAudio: false, isPlaying: false });
       },
       onplayerror: (id, err) => {
         console.error("Audio Play Error:", err);
+        set({ isLoadingAudio: false });
         newHowl.once('unlock', () => {
           newHowl.play();
         });
@@ -82,7 +100,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
     newHowl.play();
 
-    // Media Session API Support
+    // Media Session API Support (Điều khiển từ màn hình khóa điện thoại)
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: episode.title,
@@ -159,11 +177,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   setSleepTimer: (minutes) => {
     set({ sleepTimer: minutes });
-    // Timer logic would typically run in a component useEffect or external manager
   }
 }));
 
-// Progress updater
+// Bộ đếm thời lượng nghe theo giây
 setInterval(() => {
   const { howl, isPlaying } = usePlayerStore.getState();
   if (isPlaying && howl) {
